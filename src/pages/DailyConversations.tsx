@@ -3,13 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Mic, Volume2, Send, Loader2 } from "lucide-react";
+import { Mic, Volume2, Loader2 } from "lucide-react";
 import { useVoiceConversation } from "@/hooks/useVoiceConversation";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
 import WaveformVisualizer from "@/components/WaveformVisualizer";
 import AITypingIndicator from "@/components/AITypingIndicator";
 import AISpeakingAnimation from "@/components/AISpeakingAnimation";
+import { mockDb } from "@/mocks/mockDb";
 
 interface Message {
   sender: "AI" | "You";
@@ -33,11 +33,7 @@ const DailyConversations = () => {
       if (!sessionId) return;
       
       try {
-        const { data } = await supabase
-          .from("messages")
-          .select("sender, text, created_at")
-          .eq("session_id", sessionId)
-          .order("created_at", { ascending: true });
+        const data = await mockDb.getMessagesBySession(sessionId);
 
         if (data) {
           const formattedMessages: Message[] = data.map((msg) => ({

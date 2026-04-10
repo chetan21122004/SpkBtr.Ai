@@ -4,10 +4,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { FileText, Trash2, Search, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { AudioPlayer } from "@/components/AudioPlayer";
+import { mockDb } from "@/mocks/mockDb";
+import type { MockMessage, MockSession } from "@/mocks/mockData";
 
 interface Session {
   id: string;
@@ -28,7 +29,7 @@ const Recordings = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
-  const [sessionMessages, setSessionMessages] = useState<Record<string, any[]>>({});
+  const [sessionMessages, setSessionMessages] = useState<Record<string, MockMessage[]>>({});
 
   // Fetch sessions from Supabase
   useEffect(() => {
@@ -37,27 +38,14 @@ const Recordings = () => {
     const fetchSessions = async () => {
       try {
         setLoading(true);
-        const { data: sessionsData, error } = await supabase
-          .from("sessions")
-          .select("id, started_at, ended_at, notes, ai_summary, category_id, user_audio_url")
-          .eq("user_id", user.id)
-          .order("started_at", { ascending: false });
-
-        if (error) throw error;
-
-        // Fetch category names for all sessions
-        const categoryIds = [...new Set((sessionsData || []).map((s: any) => s.category_id))];
-        const { data: categoriesData } = await supabase
-          .from("categories")
-          .select("id, name")
-          .in("id", categoryIds);
-
-        const categoryMap = new Map(
-          (categoriesData || []).map((cat: any) => [cat.id, cat.name])
-        );
+        const [sessionsData, categoriesData] = await Promise.all([
+          mockDb.getSessionsByUser(user.id),
+          mockDb.getCategories(),
+        ]);
+        const categoryMap = new Map((categoriesData || []).map((cat) => [cat.id, cat.name]));
 
         // Transform data to include category name
-        const sessionsWithCategories: Session[] = (sessionsData || []).map((session: any) => ({
+        const sessionsWithCategories: Session[] = (sessionsData || []).map((session: MockSession) => ({
           id: session.id,
           category_name: categoryMap.get(session.category_id) || "Unknown",
           started_at: session.started_at,
@@ -70,20 +58,10 @@ const Recordings = () => {
         // Fetch message counts and recordings for each session
         const sessionsWithData = await Promise.all(
           sessionsWithCategories.map(async (session) => {
-            // Fetch message count
-            const { count } = await supabase
-              .from("messages")
-              .select("*", { count: "exact", head: true })
-              .eq("session_id", session.id);
-            
-            // Fetch recording (most recent one for this session)
-            const { data: recording } = await supabase
-              .from("recordings")
-              .select("audio_url, duration")
-              .eq("session_id", session.id)
-              .order("created_at", { ascending: false })
-              .limit(1)
-              .maybeSingle();
+            const [count, recording] = await Promise.all([
+              mockDb.getMessageCountBySession(session.id),
+              mockDb.getLatestRecordingBySession(session.id),
+            ]);
             
             // Use combined session audio from recordings table, or fallback to user audio from sessions table
             const recordingUrl = recording?.audio_url || session.user_audio_url || null;
@@ -91,7 +69,7 @@ const Recordings = () => {
             
             return {
               ...session,
-              message_count: count || 0,
+              message_count: count,
               recording_url: recordingUrl,
               recording_duration: recordingDuration,
             };
@@ -115,13 +93,7 @@ const Recordings = () => {
     if (sessionMessages[sessionId]) return; // Already loaded
 
     try {
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("session_id", sessionId)
-        .order("created_at", { ascending: true });
-
-      if (error) throw error;
+      const data = await mockDb.getMessagesBySession(sessionId);
       setSessionMessages((prev) => ({ ...prev, [sessionId]: data || [] }));
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -162,88 +134,11 @@ const Recordings = () => {
     if (!confirm("Are you sure you want to delete this session? This will also delete all messages and recordings.")) return;
 
     try {
-      console.log("🗑️ Attempting to delete session:", sessionId, "for user:", user?.id);
-      
-      // First, verify the session exists and belongs to the user
-      const { data: existingSession, error: checkError } = await supabase
-        .from("sessions")
-        .select("id, user_id")
-        .eq("id", sessionId)
-        .eq("user_id", user?.id)
-        .single();
-
-      if (checkError || !existingSession) {
-        console.error("❌ Session not found or doesn't belong to user:", checkError);
+      const deleted = await mockDb.deleteSession(user?.id || "", sessionId);
+      if (!deleted) {
         toast.error("Session not found or you don't have permission to delete it.");
         return;
       }
-
-      console.log("✅ Session verified, proceeding with deletion...");
-
-      // Delete related records first (messages and recordings)
-      // Delete messages
-      const { error: messagesError, count: messagesCount } = await supabase
-        .from("messages")
-        .delete()
-        .eq("session_id", sessionId)
-        .select("*", { count: "exact", head: true });
-      
-      if (messagesError) {
-        console.warn("⚠️ Warning deleting messages:", messagesError);
-      } else {
-        console.log(`✅ Deleted ${messagesCount || 0} messages`);
-      }
-
-      // Delete recordings
-      const { error: recordingsError, count: recordingsCount } = await supabase
-        .from("recordings")
-        .delete()
-        .eq("session_id", sessionId)
-        .select("*", { count: "exact", head: true });
-      
-      if (recordingsError) {
-        console.warn("⚠️ Warning deleting recordings:", recordingsError);
-      } else {
-        console.log(`✅ Deleted ${recordingsCount || 0} recordings`);
-      }
-
-      // Delete the session itself - CRITICAL: Use .select() to verify deletion
-      const { data: deletedSessions, error: sessionError } = await supabase
-        .from("sessions")
-        .delete()
-        .eq("id", sessionId)
-        .eq("user_id", user?.id)
-        .select(); // This returns the deleted rows
-
-      if (sessionError) {
-        console.error("❌ Error deleting session:", sessionError);
-        throw sessionError;
-      }
-
-      // Verify that a session was actually deleted
-      if (!deletedSessions || deletedSessions.length === 0) {
-        console.error("❌ No session was deleted!");
-        console.error("Session ID:", sessionId);
-        console.error("User ID:", user?.id);
-        console.error("This could be due to:");
-        console.error("1. RLS policy blocking DELETE operation");
-        console.error("2. Session doesn't exist");
-        console.error("3. user_id doesn't match");
-        
-        toast.error("Failed to delete session. Check console for details. Session may be protected by security policies.");
-        return; // Don't update state if nothing was deleted
-      }
-
-      console.log("✅ Successfully deleted session:", deletedSessions[0].id);
-      console.log("✅ Deleted session details:", {
-        id: deletedSessions[0].id,
-        started_at: deletedSessions[0].started_at,
-        ended_at: deletedSessions[0].ended_at
-      });
-
-      // Deletion is already confirmed by deletedSessions.length > 0
-      // No need for additional verification query (which causes 406 error)
-      console.log("✅ Deletion confirmed - session removed from database");
 
       // Update local state only after verifying deletion
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
@@ -260,10 +155,10 @@ const Recordings = () => {
         setExpandedSessionId(null);
       }
 
-      toast.success("Session deleted successfully and confirmed");
-    } catch (error: any) {
+      toast.success("Session deleted successfully");
+    } catch (error: unknown) {
       console.error("❌ Error deleting session:", error);
-      const errorMessage = error?.message || error?.code || "Unknown error";
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to delete session: ${errorMessage}`);
     }
   };

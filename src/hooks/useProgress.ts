@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./useAuth";
+import { mockDb } from "@/mocks/mockDb";
 import {
   toIST,
   getISTDate,
@@ -67,56 +67,9 @@ export const useProgress = (): ProgressData => {
         setLoading(true);
         setError(null);
 
-        // Fetch all completed sessions for the user
-        // Try to fetch with scores, but fallback to basic fields if columns don't exist
-        let sessions: any[] = [];
-        let sessionsError: any = null;
-        
-        try {
-          const { data, error } = await supabase
-            .from("sessions")
-            .select("id, started_at, ended_at, category_id, tone_score, confidence_score, fluency_score")
-            .eq("user_id", user.id)
-            .not("ended_at", "is", null)
-            .order("started_at", { ascending: false });
-          
-          sessions = data || [];
-          sessionsError = error;
-        } catch (err: any) {
-          // If columns don't exist, fetch without scores
-          if (err?.code === "42703" || err?.message?.includes("does not exist")) {
-            console.warn("⚠️ Score columns not found, fetching sessions without scores. Please run the migration.");
-            const { data, error } = await supabase
-              .from("sessions")
-              .select("id, started_at, ended_at, category_id")
-              .eq("user_id", user.id)
-              .not("ended_at", "is", null)
-              .order("started_at", { ascending: false });
-            
-            sessions = data || [];
-            sessionsError = error;
-          } else {
-            sessionsError = err;
-          }
-        }
-
-        if (sessionsError) {
-          // If it's a column error, continue with empty sessions
-          if (sessionsError.code === "42703" || sessionsError.message?.includes("does not exist")) {
-            console.warn("⚠️ Score columns not found, continuing without scores");
-            sessions = [];
-          } else {
-            throw sessionsError;
-          }
-        }
-
-        // Fetch all recordings to calculate practice time
-        const { data: recordings, error: recordingsError } = await supabase
-          .from("recordings")
-          .select("session_id, duration")
-          .eq("user_id", user.id);
-
-        if (recordingsError) throw recordingsError;
+        const allSessions = await mockDb.getSessionsByUser(user.id);
+        const sessions = allSessions.filter((s) => s.ended_at);
+        const recordings = await mockDb.getRecordingsByUser(user.id);
 
         // Calculate weekly performance
         const weekly = calculateWeeklyPerformance(sessions || []);

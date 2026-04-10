@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import * as LucideIcons from "lucide-react";
+import { mockDb } from "@/mocks/mockDb";
 
 export interface Category {
   id: string;
@@ -15,20 +15,6 @@ export interface Category {
   icon?: LucideIcons.LucideIcon;
 }
 
-// Map icon names to Lucide icons
-const iconMap: Record<string, LucideIcons.LucideIcon> = {
-  Mic: LucideIcons.Mic,
-  Briefcase: LucideIcons.Briefcase,
-  Users: LucideIcons.Users,
-  MessageCircle: LucideIcons.MessageCircle,
-  Volume2: LucideIcons.Volume2,
-  Heart: LucideIcons.Heart,
-  Brain: LucideIcons.Brain,
-  Presentation: LucideIcons.Presentation,
-  Phone: LucideIcons.Phone,
-  // Add more mappings as needed
-};
-
 export const useCategories = () => {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,23 +23,8 @@ export const useCategories = () => {
   useEffect(() => {
     const loadCategories = async () => {
       try {
-        const { data, error: fetchError } = await supabase
-          .from("categories")
-          .select("*")
-          .eq("is_active", true)
-          .order("display_order", { ascending: true });
-
-        if (fetchError) throw fetchError;
-
-        const categoriesWithIcons: Category[] = (data || []).map((cat) => {
-          const icon = cat.icon_name ? iconMap[cat.icon_name] : undefined;
-          return {
-            ...cat,
-            icon,
-          };
-        });
-
-        setCategories(categoriesWithIcons);
+        const data = await mockDb.getCategories();
+        setCategories(data as Category[]);
         setLoading(false);
       } catch (err) {
         setError(err as Error);

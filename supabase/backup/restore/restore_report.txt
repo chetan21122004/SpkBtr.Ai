@@ -1,0 +1,5 @@
+source=C:\Users\cheta\OneDrive\Desktop\Personal stuff\SpkBtr.Ai\supabase\backup\db_cluster-05-12-2025@15-14-28.backup
+mode=lossless_line_filter
+schema_lines=3527
+data_lines=751
+post_lines=2707

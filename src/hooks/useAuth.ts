@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { mockDb } from "@/mocks/mockDb";
 
 interface User {
   id: string;
@@ -30,36 +30,9 @@ export const useAuth = () => {
 
   const register = async (email: string, password: string, name: string) => {
     try {
-      // Check if user already exists
-      const { data: existingUser, error: checkError } = await supabase
-        .from("users")
-        .select("email")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (checkError && checkError.code !== "PGRST116") {
-        throw checkError;
-      }
-
-      if (existingUser) {
-        throw new Error("User with this email already exists");
-      }
-
-      // Insert new user with plain text password
-      const { data: newUser, error } = await supabase
-        .from("users")
-        .insert({
-          email,
-          password, // Plain text password (as requested)
-          name,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const newUser = await mockDb.registerUser(email, password, name);
 
       if (newUser) {
-        // Store user in state and localStorage
         const userData: User = {
           id: newUser.id,
           name: newUser.name,
@@ -70,35 +43,20 @@ export const useAuth = () => {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(userData));
         return { success: true, user: userData };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Registration failed";
       console.error("Registration error:", error);
-      return { success: false, error: error.message || "Registration failed" };
+      return { success: false, error: message };
     }
   };
 
   const login = async (email: string, password: string) => {
     try {
-      // Query user by email - use maybeSingle() to handle no results gracefully
-      const { data: userData, error } = await supabase
-        .from("users")
-        .select("*")
-        .eq("email", email)
-        .maybeSingle();
-
-      if (error) {
-        throw error;
-      }
-
+      const userData = await mockDb.loginUser(email, password);
       if (!userData) {
         throw new Error("Invalid email or password");
       }
 
-      // Compare passwords (plain text comparison as requested)
-      if (userData.password !== password) {
-        throw new Error("Invalid email or password");
-      }
-
-      // Store user in state and localStorage
       const user: User = {
         id: userData.id,
         name: userData.name,
@@ -108,9 +66,10 @@ export const useAuth = () => {
       setUser(user);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
       return { success: true, user };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Login failed";
       console.error("Login error:", error);
-      return { success: false, error: error.message || "Login failed" };
+      return { success: false, error: message };
     }
   };
 

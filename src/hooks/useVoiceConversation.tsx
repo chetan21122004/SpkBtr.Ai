@@ -1,9 +1,9 @@
 import { useRef, useState, useEffect } from "react";
 import { useConversation } from "@elevenlabs/react";
-import { supabase } from "@/integrations/supabase/client";
 import { useAppConfig } from "./useAppConfig";
 import { analyzeAudioBlob } from "@/utils/audioAnalysis";
 import { calculateAllScores, validateAnalysis } from "@/utils/scoreCalculation";
+import { mockDb } from "@/mocks/mockDb";
 
 interface UseVoiceConversationOptions {
   categoryName: string;
@@ -34,7 +34,7 @@ export const useVoiceConversation = ({
   const userAudioChunksRef = useRef<Blob[]>([]);
   const recordingMimeTypeRef = useRef<string>("audio/webm");
 
-  // Load category and context from Supabase
+  // Load category and context from mock DB
   useEffect(() => {
     // Reset state when category changes
     setCategoryId(null);
@@ -59,16 +59,7 @@ export const useVoiceConversation = ({
 
     const loadCategory = async () => {
       try {
-        const { data: category, error } = await supabase
-          .from("categories")
-          .select("id, base_context")
-          .eq("name", categoryName)
-          .maybeSingle();
-
-        if (error && error.code !== "PGRST116") {
-          console.error("Error loading category:", error);
-          return;
-        }
+        const category = await mockDb.getCategoryByName(categoryName);
 
         if (category) {
           setCategoryId(category.id);
@@ -87,23 +78,12 @@ export const useVoiceConversation = ({
     if (!userId || !categoryId) return "";
 
     try {
-      const { data: lastSession } = await supabase
-        .from("sessions")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("category_id", categoryId)
-        .order("started_at", { ascending: false })
-        .limit(1)
-        .single();
+      const lastSession = await mockDb.getLatestSessionByUserAndCategory(userId, categoryId);
 
       if (!lastSession) return "";
 
-      const { data: messages } = await supabase
-        .from("messages")
-        .select("sender, text")
-        .eq("session_id", lastSession.id)
-        .order("created_at", { ascending: false })
-        .limit(limit);
+      const allMessages = await mockDb.getMessagesBySession(lastSession.id);
+      const messages = allMessages.slice(-limit);
 
       if (!messages || messages.length === 0) return "";
 
@@ -120,137 +100,16 @@ export const useVoiceConversation = ({
     }
   };
 
-  // Helper function to verify bucket exists and is accessible
-  const verifyBucketExists = async (bucketName: string): Promise<boolean> => {
-    try {
-      console.log("🔍 Verifying bucket exists:", bucketName);
-      const { data, error } = await supabase.storage.from(bucketName).list('', { limit: 1 });
-      
-      if (error) {
-        if (error.message?.includes('not found') || error.message?.includes('does not exist')) {
-          console.error(`❌ Bucket '${bucketName}' does not exist. Please create it in Supabase Dashboard → Storage`);
-          return false;
-        }
-        console.error("❌ Error verifying bucket:", error);
-        return false;
-      }
-      
-      console.log("✅ Bucket verified:", bucketName);
-      return true;
-    } catch (error) {
-      console.error("❌ Exception verifying bucket:", error);
-      return false;
-    }
-  };
-
-  // Helper function to list bucket contents (for debugging)
-  const listBucketContents = async (bucketName: string, path: string = ''): Promise<void> => {
-    try {
-      const { data, error } = await supabase.storage.from(bucketName).list(path, { limit: 10 });
-      if (error) {
-        console.error("❌ Error listing bucket contents:", error);
-        return;
-      }
-      console.log(`📁 Bucket contents at '${path}':`, data);
-    } catch (error) {
-      console.error("❌ Exception listing bucket:", error);
-    }
-  };
-
-  // Helper function to upload audio to Supabase Storage
+  // Helper function to keep an accessible URL for audio blobs
   const uploadAudioToStorage = async (blob: Blob, fileName: string, currentSessionId: string): Promise<string | null> => {
     try {
-      // Step 1: Validate inputs
       if (!userId || !currentSessionId) {
-        console.error("❌ Missing userId or sessionId for audio upload", { userId, currentSessionId });
+        console.error("❌ Missing userId or sessionId for audio save", { userId, currentSessionId });
         return null;
       }
-
-      const bucketName = "recordings";
-      const filePath = `${userId}/${currentSessionId}/${fileName}`;
-      
-      // Step 2: Pre-upload logging
-      console.log("📤 [Step 1/5] Pre-upload check:", {
-        userId,
-        sessionId: currentSessionId,
-        fileName,
-        filePath,
-        blobSize: blob.size,
-        blobType: blob.type,
-        bucketName
-      });
-
-      // Step 3: Verify bucket exists
-      console.log("📤 [Step 2/5] Verifying bucket access...");
-      const bucketExists = await verifyBucketExists(bucketName);
-      if (!bucketExists) {
-        console.error("❌ Bucket verification failed. Upload aborted.");
-        // Note: Toast notifications would require importing toast, but we'll log for now
-        return null;
-      }
-
-      // Step 4: Attempt upload
-      console.log("📤 [Step 3/5] Uploading file to storage...");
-      const { data, error } = await supabase.storage
-        .from(bucketName)
-        .upload(filePath, blob, {
-          contentType: "audio/mpeg",
-          upsert: true,
-        });
-
-      if (error) {
-        console.error("❌ [Step 3/5] Upload failed:", error);
-        console.error("Error code:", error.statusCode || error.error || 'unknown');
-        console.error("Error message:", error.message);
-        console.error("Full error:", JSON.stringify(error, null, 2));
-        
-        // Handle specific error codes
-        if (error.statusCode === 403 || error.message?.includes('permission') || error.message?.includes('policy')) {
-          console.error("💡 Tip: Check bucket RLS policies. For custom auth, you may need to disable RLS or add permissive policies.");
-        } else if (error.statusCode === 404 || error.message?.includes('not found')) {
-          console.error("💡 Tip: Bucket may not exist. Create it in Supabase Dashboard → Storage");
-        }
-        
-        return null;
-      }
-
-      console.log("✅ [Step 3/5] Upload successful:", data);
-      console.log("Upload response:", JSON.stringify(data, null, 2));
-
-      // Step 5: Generate public URL
-      console.log("📤 [Step 4/5] Generating public URL...");
-      const { data: urlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(filePath);
-
-      const publicUrl = urlData.publicUrl;
-      console.log("✅ [Step 4/5] Public URL generated:", publicUrl);
-      
-      // Verify URL format
-      if (!publicUrl || !publicUrl.startsWith("http")) {
-        console.error("❌ [Step 4/5] Invalid URL format:", publicUrl);
-        return null;
-      }
-
-      // Step 6: Verify file exists in bucket
-      console.log("📤 [Step 5/5] Verifying file exists in bucket...");
-      await listBucketContents(bucketName, `${userId}/${currentSessionId}`);
-      
-      // Try to access the file to verify it's accessible
-      const { data: fileData, error: fileError } = await supabase.storage
-        .from(bucketName)
-        .list(`${userId}/${currentSessionId}`, { search: fileName });
-      
-      if (fileError) {
-        console.warn("⚠️ Could not verify file existence:", fileError);
-      } else if (fileData && fileData.length > 0) {
-        console.log("✅ [Step 5/5] File verified in bucket:", fileData[0]);
-      } else {
-        console.warn("⚠️ File not found in bucket listing (may be a timing issue)");
-      }
-
-      console.log("✅ Upload complete! URL:", publicUrl);
-      return publicUrl;
+      const objectUrl = URL.createObjectURL(blob);
+      console.log("✅ Mock audio saved:", { fileName, sessionId: currentSessionId, objectUrl });
+      return objectUrl;
     } catch (error) {
       console.error("❌ Exception in uploadAudioToStorage:", error);
       if (error instanceof Error) {
@@ -728,23 +587,12 @@ export const useVoiceConversation = ({
         return;
       }
 
-      // Create session in Supabase FIRST (before starting 11Labs session)
-      console.log("📝 Creating session in Supabase...", { userId, categoryId });
-      const { data: session, error: sessionError } = await supabase
-        .from("sessions")
-        .insert({
-          user_id: userId,
-          category_id: categoryId,
-          started_at: new Date().toISOString(),
-        })
-        .select()
-        .single();
-
-      if (sessionError) {
-        console.error("❌ Error creating session:", sessionError);
-        return; // Don't start 11Labs session if DB session creation fails
-      }
-
+      console.log("📝 Creating session in mock store...", { userId, categoryId });
+      const session = await mockDb.createSession({
+        user_id: userId,
+        category_id: categoryId,
+        started_at: new Date().toISOString(),
+      });
       if (!session || !session.id) {
         console.error("❌ Session creation returned no data");
         return;
@@ -834,8 +682,8 @@ export const useVoiceConversation = ({
           // Convert WebM to WAV if needed (Supabase doesn't support WebM)
           try {
             let audioBlobToUpload = userAudioBlob;
-            let fileExtension = userAudioBlob.type.includes('ogg') ? 'ogg' : 
-                               userAudioBlob.type.includes('webm') ? 'wav' : 'mp3';
+            const fileExtension = userAudioBlob.type.includes('ogg') ? 'ogg' : 
+                                  userAudioBlob.type.includes('webm') ? 'wav' : 'mp3';
             
             // Convert WebM to WAV for Supabase compatibility
             if (userAudioBlob.type.includes('webm')) {
@@ -927,33 +775,23 @@ export const useVoiceConversation = ({
         ? conversationText 
         : "[Audio session recorded - transcripts not available]";
 
-      const { error: messageError } = await supabase.from("messages").insert({
+      await mockDb.addMessage({
         session_id: currentSessionId,
         sender: "ai", // Using 'ai' as default since it's a combined conversation
         text: messageText,
         audio_url: audioUrl,
       });
-
-      if (messageError) {
-        console.error("❌ Error saving conversation message:", messageError);
-      } else {
-        console.log("✅ Conversation message saved");
-      }
+      console.log("✅ Conversation message saved");
 
       // 5. Save one recording entry with combined audio URL
       if (audioUrl && userId) {
-        const { error: recordingError } = await supabase.from("recordings").insert({
+        await mockDb.addRecording({
           user_id: userId,
           session_id: currentSessionId,
           audio_url: audioUrl,
           duration: duration,
         });
-
-        if (recordingError) {
-          console.error("❌ Error saving recording:", recordingError);
-        } else {
-          console.log("✅ Recording saved:", audioUrl, `(${duration}s)`);
-        }
+        console.log("✅ Recording saved:", audioUrl, `(${duration}s)`);
       }
 
       // 6. Save scores to database
@@ -973,57 +811,20 @@ export const useVoiceConversation = ({
           if (confidenceScore !== null) updateData.confidence_score = confidenceScore;
           if (fluencyScore !== null) updateData.fluency_score = fluencyScore;
           if (userAudioUrl) updateData.user_audio_url = userAudioUrl;
-
-          const { error: scoreError } = await supabase
-            .from("sessions")
-            .update(updateData)
-            .eq("id", currentSessionId);
-
-          if (scoreError) {
-            console.error("❌ Error saving scores:", scoreError);
-            // If columns don't exist, log helpful message
-            if (
-              scoreError.message?.includes("column") ||
-              scoreError.code === "42703" ||
-              scoreError.message?.includes("does not exist")
-            ) {
-              console.warn(
-                "⚠️ Score columns may not exist. Please run the database migration from supabase/migrations/add_scores_to_sessions.sql"
-              );
-            }
-          } else {
-            console.log("✅ Scores saved to database:", {
-              tone: toneScore,
-              confidence: confidenceScore,
-              fluency: fluencyScore,
-            });
-          }
+          await mockDb.updateSession(currentSessionId, updateData);
+          console.log("✅ Scores saved to mock store:", {
+            tone: toneScore,
+            confidence: confidenceScore,
+            fluency: fluencyScore,
+          });
         } catch (scoreSaveError) {
           console.error("❌ Error saving scores:", scoreSaveError);
-          // Still try to update session end time even if scores failed
-          const { error: sessionError } = await supabase
-            .from("sessions")
-            .update({ ended_at: new Date().toISOString() })
-            .eq("id", currentSessionId);
-          
-          if (sessionError) {
-            console.error("❌ Error updating session end time:", sessionError);
-          } else {
-            console.log("✅ Session ended (scores not saved):", currentSessionId);
-          }
+          await mockDb.updateSession(currentSessionId, { ended_at: new Date().toISOString() });
+          console.log("✅ Session ended (scores not saved):", currentSessionId);
         }
       } else {
-        // Still update session end time even if no scores
-        const { error: sessionError } = await supabase
-          .from("sessions")
-          .update({ ended_at: new Date().toISOString() })
-          .eq("id", currentSessionId);
-        
-        if (sessionError) {
-          console.error("❌ Error updating session end time:", sessionError);
-        } else {
-          console.log("✅ Session ended:", currentSessionId);
-        }
+        await mockDb.updateSession(currentSessionId, { ended_at: new Date().toISOString() });
+        console.log("✅ Session ended:", currentSessionId);
       }
 
       // 7. Clear memory refs
